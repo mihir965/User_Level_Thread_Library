@@ -18,7 +18,7 @@ double avg_resp_time=0;
 // INITAILIZE ALL YOUR OTHER VARIABLES HERE
 // YOUR CODE HERE
 /* Defining a t_id counter */
-int t_id = 0;
+static int t_id = 0;
 /* Defining the shced_context and the initializer boolean variable to ensure that the shced_context is only initialized once */
 static ucontext_t sched_context;
 static int scheduler_initialized = 0;
@@ -36,7 +36,7 @@ void create_sched_context(){
     }
     sched_context.uc_stack.ss_sp = malloc(SIGSTKSZ);
     sched_context.uc_stack.ss_size = SIGSTKSZ;
-    sched_context.uc_flags = 0;
+    sched_context.uc_stack.ss_flags = 0;
     sched_context.uc_link = NULL;
     makecontext(&sched_context, schedule, 0);
     scheduler_initialized = 1;
@@ -70,10 +70,14 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
         exit(1);
     }
 
+    /* Setting up the context of the worker thread */
     new_thread->context.uc_stack.ss_sp = new_thread->stack_base;
     new_thread->context.uc_stack.ss_size = SIGSTKSZ;
-    new_thread->context.uc_flags = 0;
+    new_thread->context.uc_stack.ss_flags = 0;
     new_thread->context.uc_link = &sched_context;
+    makecontext(&new_thread->context, (void(*)()) function, 1, arg); // The void* (*function) (void*) means that the function can return and pass in any type of data. void* is used for loose defining the type that is returned or passed in
+
+    new_thread->state = THREAD_READY;
 
     return 0;
 };
