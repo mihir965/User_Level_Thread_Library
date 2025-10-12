@@ -12,7 +12,7 @@
 
 /* To use Linux pthread Library in Benchmark, you have to comment the
  * USE_WORKERS macro */
-#define USE_WORKERS 1
+// #define USE_WORKERS 1
 
 /* Targeted latency in milliseconds */
 #define TARGET_LATENCY 20
@@ -81,7 +81,19 @@ typedef struct worker_mutex_t {
 
 // YOUR CODE HERE
 
+// Gonna use a Linked List for runqueue
+typedef struct QueueThread {
+    struct QueueThread* next;
+    tcb* thread_tcb;
+} q_thread;
+
 /* Function Declarations: */
+
+void enqueue(tcb* new_thread);
+
+tcb* dequeue();
+
+void delete_from_queue(tcb* new_thread);
 
 /* fucntion to create the scheduler context only once */
 void create_sched_context();

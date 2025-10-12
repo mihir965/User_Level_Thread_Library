@@ -1,5 +1,6 @@
 // File:	thread-worker.c
 // List all group member's name:
+// mak575 Mihir Kulkarni
 // username of iLab:
 // iLab Server:
 
@@ -14,7 +15,6 @@ long tot_cntx_switches=0;
 double avg_turn_time=0;
 double avg_resp_time=0;
 
-
 // INITAILIZE ALL YOUR OTHER VARIABLES HERE
 // YOUR CODE HERE
 /* Defining a t_id counter */
@@ -23,9 +23,67 @@ static int t_id = 0;
 static ucontext_t sched_context;
 static int scheduler_initialized = 0;
 
+/* Initializing the head of the linked list */
+static q_thread* head = NULL;
+
 
 /* Forward referencing schedule()*/
 static void schedule();
+
+/* defining some auxillary functions for the data structure supporting the scheduling policy */
+void enqueue(tcb* new_thread){
+    q_thread* node = malloc(sizeof (q_thread));
+    node->thread_tcb = new_thread;
+    node->next = NULL;
+
+    if(head==NULL){
+        head = node;
+        return;
+    }
+
+    q_thread* temp = head;
+    while(temp->next != NULL){
+        temp = temp->next;
+    }
+    temp->next = node;
+    printf("thread (%d) has been enqueued into the scheduler\n", new_thread->tid);
+    return;
+}
+
+/* We will return the head of the queue and advance the queue to the next node (tcb) */
+tcb* dequeue(){
+    if(head==NULL)
+        return NULL;
+    q_thread* node = head;
+    tcb* to_return = node->thread_tcb;
+    head = head->next;
+    free(node);
+    return to_return;
+}
+
+void delete_from_queue(tcb *new_thread){
+    if(head==NULL) return;
+
+    /* We create curr and prev since we will want to reorder the list once we delete a node. This is basic linked list logic */
+    q_thread* curr = head;
+    q_thread* prev = NULL;
+
+    while(curr!=NULL){
+        if(curr->thread_tcb == new_thread){
+            if(prev==NULL){
+                /* This means we are deleteing the first tcb only */
+                head = curr->next;
+            }else{
+                prev->next = curr->next;
+            }
+            free(curr);
+            return;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+    return;
+}
 
 void create_sched_context(){
     /* Since we also want to create the scheduler context that we want to return to after the worker fn is done returning, we can use static keyword to only initialize this context once in the program */
@@ -65,12 +123,13 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
     /* allocating enough space for the stack of the thread */
     new_thread->stack_base = malloc(SIGSTKSZ);
 
+
+
+    /* Setting up the context of the worker thread */
     if(getcontext(&new_thread->context) < 0){
         perror("getcontext");
         exit(1);
     }
-
-    /* Setting up the context of the worker thread */
     new_thread->context.uc_stack.ss_sp = new_thread->stack_base;
     new_thread->context.uc_stack.ss_size = SIGSTKSZ;
     new_thread->context.uc_stack.ss_flags = 0;
@@ -78,6 +137,10 @@ int worker_create(worker_t * thread, pthread_attr_t * attr,
     makecontext(&new_thread->context, (void(*)()) function, 1, arg); // The void* (*function) (void*) means that the function can return and pass in any type of data. void* is used for loose defining the type that is returned or passed in
 
     new_thread->state = THREAD_READY;
+    new_thread->priority = 0;
+
+    /* We then enqueue this tcb into our global linked list that we use for scheuling */
+    enqueue(new_thread);
 
     return 0;
 };
@@ -203,17 +266,16 @@ static void schedule() {
 	// schedule() function
 	
 	//YOUR CODE HERE
-
-	// - invoke scheduling algorithms according to the policy (PSJF or MLFQ or CFS)
-#if defined(PSJF)
-    	sched_psjf();
-#elif defined(MLFQ)
-	sched_mlfq();
-#elif defined(CFS)
-    	sched_cfs();  
-#else
-	# error "Define one of PSJF, MLFQ, or CFS when compiling. e.g. make SCHED=MLFQ"
-#endif
+// 	// - invoke scheduling algorithms according to the policy (PSJF or MLFQ or CFS)
+// #if defined(PSJF)
+//     	sched_psjf();
+// #elif defined(MLFQ)
+// 	sched_mlfq();
+// #elif defined(CFS)
+//     	sched_cfs();  
+// #else
+// 	# error "Define one of PSJF, MLFQ, or CFS when compiling. e.g. make SCHED=MLFQ"
+// #endif
 }
 
 
