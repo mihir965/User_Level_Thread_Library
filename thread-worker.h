@@ -7,6 +7,7 @@
 #ifndef WORKER_T_H
 #define WORKER_T_H
 
+#include <stdatomic.h>
 #include <sys/ucontext.h>
 #define _GNU_SOURCE
 
@@ -42,7 +43,10 @@ typedef enum {
   THREAD_RUNNING,
   THREAD_READY,
   THREAD_TERMINATED,
+  THREAD_BLOCKED,
 } thread_state;
+
+typedef struct QueueThread q_thread;
 
 typedef struct TCB {
   /* add important states in a thread control block */
@@ -64,7 +68,10 @@ typedef struct TCB {
                   // malloc, but since we are abstacting the behaviour of
                   // threads, we need to allocate seperate space for each thread
   uint stack_size;
-  int priority;   // This will be the nice value.
+  int priority; // This will be the nice value.
+  void *retval; // This is needed for join since, if worker_exit passes a value
+                // ptr, it means that the return value needs to be saved. This
+                // attribute/element of the tcb will return this value
 
 } tcb;
 
@@ -73,6 +80,10 @@ typedef struct worker_mutex_t {
   /* add something here */
 
   // YOUR CODE HERE
+  int holder_tid;        // The tid of the tcb that is holding this mutex lock
+  atomic_flag lock_flag; // The flag that we will be calling the test-and-set
+                         // function on
+  struct QueueThread *head;
 } worker_mutex_t;
 
 /* define your data structures here: */
@@ -83,17 +94,24 @@ typedef struct worker_mutex_t {
 
 // Gonna use a Linked List for runqueue
 typedef struct QueueThread {
-    struct QueueThread* next;
-    tcb* thread_tcb;
+  struct QueueThread *next;
+  tcb *thread_tcb;
 } q_thread;
 
 /* Function Declarations: */
 
-void enqueue(tcb* new_thread);
+void enqueue(tcb *new_thread);
 
-tcb* dequeue();
+tcb *dequeue();
 
-void delete_from_queue(tcb* new_thread);
+void delete_from_queue(tcb *new_thread);
+
+/* fnctions for global list */
+void enqueue_globally(tcb *new_thread);
+
+void remove_globally(tcb *new_thread);
+
+tcb *find_tcb_by_tid(worker_t tid);
 
 /* fucntion to create the scheduler context only once */
 void create_sched_context();
@@ -123,6 +141,9 @@ int worker_mutex_unlock(worker_mutex_t *mutex);
 
 /* destroy the mutex */
 int worker_mutex_destroy(worker_mutex_t *mutex);
+
+/* Functions for preemption etc */
+void preempt(int signum);
 
 /* Function to print global statistics. Do not modify this function.*/
 void print_app_stats(void);

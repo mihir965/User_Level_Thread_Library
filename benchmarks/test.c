@@ -1,6 +1,8 @@
 #include "../thread-worker.h"
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
+#include <sys/ucontext.h>
 #include <time.h>
 #include <ucontext.h>
 #include <unistd.h>
@@ -13,63 +15,28 @@
  * This will not be graded.
  */
 
-int f1_ran = 0;
-
 void *fun(void *arg) {
   char *name = (char *)arg;
   printf("Hello (%s)\n", name);
-  f1_ran = 1;
   return NULL;
 }
+
+/* Basically think of the scheduler as another thread / process that is being
+ * context switched into in order to schedule and context switch into the
+ * different threads we need two contexts, main and scheduler */
+
+extern ucontext_t sched_context;
 
 int main(int argc, char **argv) {
 
   /* Implement HERE */
   worker_t w1, w2;
-  int ret = worker_create(&w1, NULL, fun, "Mihir");
-  if (ret == 0) {
-    printf("Thread created successfully (id=%d)\n", w1);
-  } else {
-    printf("Failed to create thread\n");
-  }
+  worker_create(&w1, NULL, fun, "Mihir");
+  worker_create(&w2, NULL, fun, "Kulkarni");
 
-  int ret2 = worker_create(&w2, NULL, fun, "Kulkarni");
-  if (ret2 == 0) {
-    printf("Thread created successfully (id=%d)\n", w2);
-  } else {
-    printf("Failed to create thread\n");
-  }
-
-  tcb *fn1 = dequeue();
-  if (fn1 == NULL) {
-    printf("Error no thread available in the ready queue\n");
-    exit(1);
-  }
-
-  printf("Switching to thread id (%d) now\n", fn1->tid);
-
-  ucontext_t main_context;
-
-  if (getcontext(&main_context) < 0) {
-    printf("Error creating the main context\n");
-    exit(1);
-  }
-
-  fn1->context.uc_link = &main_context;
-
-  fflush(stdout);
-  
-  if(!f1_ran){
-      setcontext(&fn1->context);
-  }
-
-  tcb *fn2 = dequeue();
-
-  printf("Switching to thread id (%d) now\n", fn2->tid);
-
-  setcontext(&fn2->context);
-
-  printf("This should not run\n");
-
+  ucontext_t maincontext;
+  getcontext(&maincontext);
+  swapcontext(&maincontext, &sched_context);
+  printf("The program ended\n");
   return 0;
 }
