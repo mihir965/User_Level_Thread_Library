@@ -17,6 +17,8 @@ else ifeq ($(SCHED), MLFQ)
 	$(CC) -pthread $(CFLAGS) -DMLFQ thread-worker.c
 else ifeq ($(SCHED), CFS)
 	$(CC) -pthread $(CFLAGS) -DCFS thread-worker.c
+else ifeq ($(SCHED), RR)
+	$(CC) -pthread $(CFLAGS) -DRR thread-worker.c
 else
 	echo "no such scheduling algorithm."
 endif

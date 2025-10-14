@@ -5,11 +5,13 @@
 // iLab Server:
 
 #include "thread-worker.h"
+#include <bits/types/sigset_t.h>
 #include <signal.h>
 #include <string.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <sys/time.h>
 #include <sys/ucontext.h>
 #include <ucontext.h>
 
@@ -35,6 +37,21 @@ static q_thread *head = NULL;
  * which is the one that we setup above */
 static q_thread *global_head = NULL;
 static tcb *current_thread = NULL;
+
+/* We need to block preemption during modification of critical states */
+sigset_t sigset;
+
+void block_preemption(){
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGPROF);
+    sigprocmask(SIG_BLOCK, &sigset, NULL);
+}
+
+void unblock_preemption(){
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGPROF);
+    sigprocmask(SIG_UNBLOCK, &sigset, NULL);
+}
 
 /* Forward referencing schedule()*/
 static void schedule();
@@ -212,8 +229,10 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
 
   /* We then enqueue this tcb into our global linked list that we use for
    * scheuling */
+  block_preemption();
   enqueue(new_thread);
   enqueue_globally(new_thread);
+  unblock_preemption();
 
   return 0;
 };
@@ -229,7 +248,9 @@ int worker_yield() {
   /* All this has to do is change the state of the thread, save the context and
    * then swap context with the scheduer context */
   current_thread->state = THREAD_READY;
+  block_preemption();
   enqueue(current_thread);
+  unblock_preemption();
   /* Accountin, need to update the total_cntx_switched */
   tot_cntx_switches++;
   swapcontext(&current_thread->context, &sched_context);
@@ -265,8 +286,10 @@ int worker_join(worker_t thread, void **value_ptr) {
     }
     while(target_thread->state!=THREAD_TERMINATED) worker_yield();
     if(value_ptr) *value_ptr = target_thread->retval;
+    block_preemption();
     delete_from_queue(target_thread);
     remove_globally(target_thread);
+    unblock_preemption();
     free(target_thread->stack_base);
     free(target_thread);
     return 0;
@@ -421,21 +444,20 @@ static void sched_cfs() {
 }
 
 static void sched_rr() {
-    /* Following the same code as timer.c */
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = &preempt;
-    sigaction(SIGPROF, &sa, NULL);
-
-    /* Create timer struct */
-    struct itimerval timer;
-
-    /* Set up what the timer should reset to after the timer goes off */
-    timer.it_interval.tv_usec = 14000;
-    timer.it_interval.tv_sec = 0;
-
-    timer.it_value.tv_usec = 14000;
-    timer.it_value.tv_sec = 14000;
+    if(current_thread && current_thread->state == THREAD_RUNNING){
+        current_thread->state = THREAD_READY;
+        enqueue(current_thread);
+    }
+    current_thread = dequeue();
+    if(!current_thread){
+        printf("All threads done, stopping program and timers\n");
+        struct itimerval stop = {0};
+        setitimer(ITIMER_PROF, &stop, NULL);
+        return;
+    }
+    current_thread->state = THREAD_RUNNING;
+    tot_cntx_switches++;
+    swapcontext(&sched_context, &current_thread->context);
 }
 
 /* I am forward referencing this function on the top of this script so that I
@@ -458,7 +480,29 @@ static void schedule() {
 #elif defined(CFS)
   sched_cfs();
 #elif defined(RR)
-  sched_rr();
+    printf("Running Round Robin\n");
+    /* Following the same code as timer.c */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = &preempt;
+    sigaction(SIGPROF, &sa, NULL);
+
+    /* Create timer struct */
+    struct itimerval timer;
+
+    /* Set up what the timer should reset to after the timer goes off */
+    timer.it_interval.tv_usec = 14000;
+    timer.it_interval.tv_sec = 0;
+
+    timer.it_value.tv_usec = 14000;
+    timer.it_value.tv_sec = 0;
+
+    setitimer(ITIMER_PROF, &timer, NULL);
+
+    current_thread = dequeue();
+    current_thread->state = THREAD_RUNNING;
+    swapcontext(&sched_context, &current_thread->context);
+    sched_rr();
 #else
 #error "Define one of PSJF, MLFQ, or CFS when compiling. e.g. make SCHED=MLFQ"
 #endif
