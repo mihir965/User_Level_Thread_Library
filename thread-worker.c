@@ -56,7 +56,7 @@ void preempt(int signum);
  * thread is trying to run an API funciton, this way, we have something to
  * return to */
 void save_main_context_if_needed() {
-  printf("[DEBUG]: save_main_context_if_needed\n");
+  // printf("[DEBUG]: save_main_context_if_needed\n");
   if (!main_context_captured) {
     if (getcontext(&main_context) < 0) {
       perror("Error getting the main_context\n");
@@ -68,7 +68,7 @@ void save_main_context_if_needed() {
 
 /* Auxillary funcitons for the global list */
 void enqueue_globally(tcb *new_thread) {
-  printf("[DEBUG]: enqueue_globally\n");
+  // printf("[DEBUG]: enqueue_globally\n");
   q_thread *node = malloc(sizeof(q_thread));
   node->thread_tcb = new_thread;
   node->next = NULL;
@@ -76,21 +76,21 @@ void enqueue_globally(tcb *new_thread) {
   if (global_head == NULL) {
     /* No threads yet */
     global_head = node;
-    printf("thread (%d) was enqueued into the global thread list\n",
-           new_thread->tid);
+    // printf("thread (%d) was enqueued into the global thread list\n",
+           // new_thread->tid);
     return;
   }
   q_thread *temp = global_head;
   while (temp->next != NULL)
     temp = temp->next;
   temp->next = node;
-  printf("thread (%d) was enqueued into the global thread list\n",
-         new_thread->tid);
+  // printf("thread (%d) was enqueued into the global thread list\n",
+         // new_thread->tid);
   return;
 }
 
 void remove_globally(tcb *new_thread) {
-  printf("[DEBUG]: remove_globally\n");
+  // printf("[DEBUG]: remove_globally\n");
   if (global_head == NULL)
     return;
   q_thread *curr = global_head;
@@ -111,7 +111,7 @@ void remove_globally(tcb *new_thread) {
 }
 
 tcb *find_tcb_by_tid(worker_t tid) {
-  printf("[DEBUG]: find_tcb_by_tid\n");
+  // printf("[DEBUG]: find_tcb_by_tid\n");
   q_thread *temp = global_head;
   while (temp != NULL) {
     if (temp->thread_tcb->tid == tid) {
@@ -119,22 +119,22 @@ tcb *find_tcb_by_tid(worker_t tid) {
     }
     temp = temp->next;
   }
-  printf("(%d) could not be found in the global list\n", tid);
+  // printf("(%d) could not be found in the global list\n", tid);
   return NULL;
 }
 
 /* defining some auxillary functions for the data structure supporting the
  * scheduling policy */
 void enqueue(tcb *new_thread) {
-  printf("[DEBUG]: Enquque\n");
+  // printf("[DEBUG]: Enquque\n");
   q_thread *node = malloc(sizeof(q_thread));
   node->thread_tcb = new_thread;
   node->next = NULL;
 
   if (head == NULL) {
     head = node;
-    printf("thread (%d) has been enqueued into the scheduler\n",
-           new_thread->tid);
+    // printf("thread (%d) has been enqueued into the scheduler\n",
+           // new_thread->tid);
     return;
   }
 
@@ -143,16 +143,16 @@ void enqueue(tcb *new_thread) {
     temp = temp->next;
   }
   temp->next = node;
-  printf("thread (%d) has been enqueued into the scheduler\n", new_thread->tid);
+  // printf("thread (%d) has been enqueued into the scheduler\n", new_thread->tid);
   return;
 }
 
 /* We will return the head of the queue and advance the queue to the next node
  * (tcb) */
 tcb *dequeue() {
-  printf("[DEBUG]: dequeue\n");
+  // printf("[DEBUG]: dequeue\n");
   if (head == NULL) {
-    printf("[DEBUG]: There are no threads in the runqueue\n");
+    // printf("[DEBUG]: There are no threads in the runqueue\n");
     return NULL;
   }
   q_thread *node = head;
@@ -164,7 +164,7 @@ tcb *dequeue() {
 }
 
 void delete_from_queue(tcb *new_thread) {
-  printf("[DEBUG]: delete_from_queue\n");
+  // printf("[DEBUG]: delete_from_queue\n");
   if (head == NULL)
     return;
 
@@ -187,11 +187,12 @@ void delete_from_queue(tcb *new_thread) {
     prev = curr;
     curr = curr->next;
   }
+  // printf("Thread not found\n");
   return;
 }
 
 void create_sched_context() {
-  printf("[DEBUG]: create_sched_context\n");
+  // printf("[DEBUG]: create_sched_context\n");
   /* Since we also want to create the scheduler context that we want to return
    * to after the worker fn is done returning, we can use static keyword to only
    * initialize this context once in the program */
@@ -202,24 +203,20 @@ void create_sched_context() {
     exit(1);
   }
 
-  /* Creating the signal set */
-  sigemptyset(&signal_mask);
-  sigaddset(&signal_mask, SIGPROF);
-
-  printf("Creating scheduler context\n");
+  // printf("Creating scheduler context\n");
   sched_context.uc_stack.ss_sp = malloc(SIGSTKSZ);
   sched_context.uc_stack.ss_size = SIGSTKSZ;
   sched_context.uc_stack.ss_flags = 0;
   sched_context.uc_link = NULL;
   makecontext(&sched_context, schedule, 0);
-
+  // printf("[DEBUG]: Did this run?\n");
   scheduler_initialized = 1;
 }
 
 /* create a new thread */
 int worker_create(worker_t *thread, pthread_attr_t *attr,
                   void *(*function)(void *), void *arg) {
-  printf("[DEBUG]: Worker_create\n");
+  // printf("[DEBUG]: Worker_create\n");
   // - create Thread Control Block (TCB)
   // - create and initialize the context of this worker thread
   // - allocate space of stack for this thread to run
@@ -238,8 +235,6 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
    * we have the scheduler_initialized variable */
   create_sched_context();
 
-  block_signals();
-
   tcb *new_thread = malloc(sizeof(tcb));
 
   /* after creating the tcb of each thread on the heap, we define it */
@@ -257,7 +252,7 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
   new_thread->context.uc_stack.ss_sp = new_thread->stack_base;
   new_thread->context.uc_stack.ss_size = SIGSTKSZ;
   new_thread->context.uc_stack.ss_flags = 0;
-  new_thread->retval = &main_context;
+  new_thread->retval = NULL;
   new_thread->context.uc_link = &sched_context;
   makecontext(&new_thread->context, (void (*)())function, 1,
               arg); // The void* (*function) (void*) means that the function can
@@ -271,14 +266,12 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
    * scheuling */
   enqueue(new_thread);
   enqueue_globally(new_thread);
-
-  unblock_signals();
   return 0;
 };
 
 /* give CPU possession to other user-level worker threads voluntarily */
 int worker_yield() {
-  printf("[DEBUG]: Worker_yeild\n");
+  // printf("[DEBUG]: Worker_yeild\n");
   // - change worker thread's state from Running to Ready
   // - save context of this thread to its thread control block
   // - switch from thread context to scheduler context
@@ -287,22 +280,18 @@ int worker_yield() {
   /* All this has to do is change the state of the thread, save the context and
    * then swap context with the scheduer context */
   if (!current_thread) {
-    printf("There is no thread running to yeild!\n");
+    // printf("There is no thread running to yeild!\n");
     return -1;
   }
-
-  block_signals();
+  // printf("[DEBUG]: swapping to sched_context\n");
   current_thread->state = THREAD_READY;
-  enqueue(current_thread);
-  unblock_signals();
-
   swapcontext(&current_thread->context, &sched_context);
   return 0;
 };
 
 /* terminate a thread */
 void worker_exit(void *value_ptr) {
-  printf("[DEBUG] Worker_exit\n");
+  // printf("[DEBUG] Worker_exit\n");
   // - de-allocate any dynamic memory created when starting this thread
 
   // YOUR CODE HERE
@@ -316,7 +305,7 @@ void worker_exit(void *value_ptr) {
 
 /* Wait for thread termination */
 int worker_join(worker_t thread, void **value_ptr) {
-  printf("[DEBUG]: Worker_Join\n");
+  // printf("[DEBUG]: Worker_Join\n");
   // - wait for a specific thread to terminate
   // - de-allocate any dynamic memory created by the joining thread
 
@@ -329,50 +318,52 @@ int worker_join(worker_t thread, void **value_ptr) {
   /* One problem I noticed is that in benchmarks worker_join is called without
    * explicitly calling schedule(), so if there is no current_thread, we need to
    * go to the scheduelr_context, run the schduler */
-  printf("Joining thread (%d)\n", thread);
+  // printf("Joining thread (%d)\n", thread);
 
   if (!current_thread) {
-    printf("Scheduler hasn't yet run\n");
+    // printf("Scheduler hasn't yet run\n");
     swapcontext(&main_context, &sched_context);
   }
 
-  block_signals();
   tcb *target_thread = find_tcb_by_tid(thread);
-  unblock_signals();
 
   if (!target_thread) {
-    printf("Could not find the thread\n");
+    // printf("Could not find the thread\n");
     return -1;
   }
+
   while (1) {
-    if (target_thread->state == THREAD_TERMINATED)
-      break;
-    /* This basically can still be the main_thread and its better to swap here
-     * because we always want to save the main_context */
-    swapcontext(&main_context, &sched_context);
+      if (target_thread->state == THREAD_TERMINATED)
+          break;
+
+      if (head == NULL && target_thread->state != THREAD_TERMINATED) {
+          // printf("[DEBUG]: No runnable threads and target not terminated — assuming done.\n");
+          break;
+      }
+
+      swapcontext(&main_context, &sched_context);
   }
+
 
   if (value_ptr)
     *value_ptr = target_thread->retval;
 
-  printf("Removing the target_thread from the global and run queue\n");
+  // printf("Removing the target_thread from the global and run queue\n");
 
-  block_signals();
   delete_from_queue(target_thread);
   remove_globally(target_thread);
-  unblock_signals();
 
   free(target_thread->stack_base);
   free(target_thread);
 
-  printf("Done removing the thread\n");
+  // printf("Done removing the thread\n");
   return 0;
 };
 
 /* initialize the mutex lock */
 int worker_mutex_init(worker_mutex_t *mutex,
                       const pthread_mutexattr_t *mutexattr) {
-  printf("[DEBUG]: Mutex Init\n");
+  // printf("[DEBUG]: Mutex Init\n");
   //- initialize data structures for this mutex
 
   // YOUR CODE HERE
@@ -385,88 +376,145 @@ int worker_mutex_init(worker_mutex_t *mutex,
 };
 
 /* aquire the mutex lock */
+// int worker_mutex_lock(worker_mutex_t *mutex) {
+//     block_signals();
+//   printf("[DEBUG]: Mutex Lock\n");
+//   // - use the built-in test-and-set atomic function to test the mutex
+//   // - if the mutex is acquired successfully, enter the critical section
+//   // - if acquiring mutex fails, push current thread into block list and
+//   // context switch to the scheduler thread
+//
+//   // YOUR CODE HERE
+//   printf("[DEBUG]: current_thread is (%d)\n", current_thread->tid);
+//   if (!atomic_flag_test_and_set(&mutex->lock_flag)) {
+//     printf("[DEBUG]: Mutex now belongs to (%d)\n", current_thread->tid);
+//     mutex->holder_tid = current_thread->tid;
+//     unblock_signals();
+//     return 0;
+//   } else {
+//     printf("[DEBUG]: Adding thread (%d) to the mutex's blocked queue\n",
+//            current_thread->tid);
+//     current_thread->state = THREAD_BLOCKED;
+//     /* We want to push the current_thread onto this mutex's wait_queue. We also
+//      * need to delete this node from the readyqueue of our scheduler */
+//     if (!mutex->head) {
+//       printf("[DEBUG]: The wait_queue is empty\n");
+//       mutex->head = malloc(sizeof(q_thread));
+//       mutex->head->thread_tcb = current_thread;
+//       mutex->head->next = NULL;
+//     } else {
+//       printf("[DEBUG]: Adding thread to the wait_queue\n");
+//       q_thread *temp = mutex->head;
+//       while (temp->next)
+//         temp = temp->next;
+//       temp->next = malloc(sizeof(q_thread));
+//       temp->next->thread_tcb = current_thread;
+//       temp->next->next = NULL;
+//     }
+//     printf("[DEBUG]: Swapping back to scheduler\n");
+//     unblock_signals();
+//     swapcontext(&current_thread->context, &sched_context);
+//   }
+//
+//   return 0;
+// };
+//
+
 int worker_mutex_lock(worker_mutex_t *mutex) {
-  printf("[DEBUG]: Mutex Lock\n");
-  // - use the built-in test-and-set atomic function to test the mutex
-  // - if the mutex is acquired successfully, enter the critical section
-  // - if acquiring mutex fails, push current thread into block list and
-  // context switch to the scheduler thread
+  // printf("[DEBUG]: Mutex Lock\n");
 
-  // YOUR CODE HERE
+  for (;;) {
+    block_signals();
 
-  if (!atomic_flag_test_and_set(&mutex->lock_flag)) {
-    mutex->holder_tid = current_thread->tid;
-    printf("[DEBUG]: Mutex now belongs to (%d)\n", mutex->holder_tid);
-    return 0;
-  } else {
+    // Fast path: try to acquire the lock
+    if (!atomic_flag_test_and_set(&mutex->lock_flag)) {
+      // acquired
+      mutex->holder_tid = current_thread->tid;
+      // printf("[DEBUG]: Mutex now belongs to (%d)\n", current_thread->tid);
+      unblock_signals();
+      return 0;
+    }
+
+    // Contended path: go to this mutex's wait queue then sleep
+    // printf("[DEBUG]: Adding thread (%d) to the mutex's blocked queue\n",
+           // current_thread->tid);
     current_thread->state = THREAD_BLOCKED;
-    /* We want to push the current_thread onto this mutex's wait_queue. We also
-     * need to delete this node from the readyqueue of our scheduler */
-    printf("[DEBUG]: Adding thread (%d) to the mutex's blocked queue",
-           current_thread->tid);
+
+    // append to wait queue
     if (!mutex->head) {
       mutex->head = malloc(sizeof(q_thread));
       mutex->head->thread_tcb = current_thread;
       mutex->head->next = NULL;
     } else {
-      q_thread *temp = mutex->head;
-      while (temp->next)
-        temp = temp->next;
-      temp->next = malloc(sizeof(q_thread));
-      temp->next->thread_tcb = current_thread;
-      temp->next->next = NULL;
+      q_thread *t = mutex->head;
+      while (t->next) t = t->next;
+      t->next = malloc(sizeof(q_thread));
+      t->next->thread_tcb = current_thread;
+      t->next->next = NULL;
     }
-    swapcontext(&current_thread->context, &sched_context);
-  }
 
-  return 0;
-};
+    // go to scheduler
+    // printf("[DEBUG]: Swapping back to scheduler\n");
+    unblock_signals();
+    delete_from_queue(current_thread);
+    swapcontext(&current_thread->context, &sched_context);
+
+    // When we return here we were woken up by unlock().
+    // Loop back and try to acquire again (someone else could have grabbed it).
+    // Re-block signals at loop top before touching shared state again.
+  }
+}
+
 
 /* release the mutex lock */
 int worker_mutex_unlock(worker_mutex_t *mutex) {
-  printf("[DEBUG]: Mutex Unlock\n");
+  // printf("[DEBUG]: Mutex Unlock\n");
   // - release mutex and make it available again.
   // - put threads in block list to run queue
   // so that they could compete for mutex later.
 
   // YOUR CODE HERE
+  block_signals();
   if (mutex->holder_tid != current_thread->tid) {
-    perror("Mutex unlock by non-owner thread\n");
+    // printf("Mutex unlock tried by (%d), owner is (%d)", current_thread->tid, mutex->holder_tid);
     exit(1);
   }
   atomic_flag_clear(&mutex->lock_flag);
   mutex->holder_tid = -1;
   if (mutex->head == NULL) {
     /* This means that no threads are contending for the lock at the moment */
-    printf("[DEBUG]: No one is contending for the lock\n");
-    worker_yield();
+    // printf(
+        // "[DEBUG]: No one is contending for the lock\nReturning to scheduler\n");
+    // worker_yield();
+    unblock_signals();
     return 0;
   }
-  printf("[DEBUG]: Waking a thread (%d)\n", mutex->head->thread_tcb->tid);
+  // printf("[DEBUG]: Waking a thread (%d)\n", mutex->head->thread_tcb->tid);
   mutex->head->thread_tcb->state = THREAD_READY;
   enqueue(mutex->head->thread_tcb);
   q_thread *temp = mutex->head;
   mutex->head = mutex->head->next;
   free(temp);
+  unblock_signals();
   swapcontext(&current_thread->context, &sched_context);
   return 0;
 };
 
 /* destroy the mutex */
 int worker_mutex_destroy(worker_mutex_t *mutex) {
-  printf("[DEBUG]: Mutex_destroy\n");
+  // printf("[DEBUG]: Mutex_destroy\n");
   // - de-allocate dynamic memory created in worker_mutex_init
   if (mutex->holder_tid != -1) {
     /* Restore flag state */
     atomic_flag_clear(&mutex->lock_flag);
-    printf("Cannot destroy mutex: it is currently locked by thread (%d)\n",
-           current_thread->tid);
+    // printf("Cannot destroy mutex: it is currently locked by thread (%d)\n",
+           // current_thread->tid);
     return -1;
   }
 
   /* Make sure that no threads are there in the waiting queue */
   if (mutex->head != NULL) {
-    printf("Cannot destroy mutex: there are threads still waiting\n");
+    // printf("Cannot destroy mutex: there are threads still waiting\n");
     return -1;
   }
 
@@ -477,21 +525,93 @@ int worker_mutex_destroy(worker_mutex_t *mutex) {
   return 0;
 };
 
-/* Very basic code to return to the scheduler context */
-void preempt(int signum) {
-  if (!current_thread)
-    return;
+void preempt(int signum){
+    if(current_thread && current_thread->state==THREAD_RUNNING){
+        // printf("[DEBUG]: Timer interrupt -> yielding thread (%d)\n", current_thread->tid);
+        current_thread->state = THREAD_READY;
+        swapcontext(&current_thread->context, &sched_context);
+    }
+}
 
-  if (current_thread->state != THREAD_RUNNING) {
-    /* If it is blocked or terminated we just want to return */
-    return;
+static void sched_rr() {
+  // printf("[DEBUG]: Entered sched_rr()\n");
+
+  // Use sigaction to register signal handler
+  struct sigaction sa;
+  memset(&sa, 0, sizeof(sa));
+  sa.sa_handler = &preempt;
+  sigaction(SIGPROF, &sa, NULL);
+
+  sigemptyset(&signal_mask);
+  sigaddset(&signal_mask, SIGPROF);
+
+  // Create timer struct
+  struct itimerval timer;
+
+  // Set up what the timer should reset to after the timer goes off
+  timer.it_interval.tv_usec = 14000;
+  timer.it_interval.tv_sec = 0;
+
+  // Set up the current timer to go off in 1 second
+  // Note: if both of the following values are zero
+  //       the timer will not be active, and the timer
+  //       will never go off even if you set the interval value
+  timer.it_value.tv_usec = 14000;
+  timer.it_value.tv_sec = 0;
+
+  // Set the timer up (start the timer)
+  setitimer(ITIMER_PROF, &timer, NULL);
+
+
+  while (1) {
+    tcb *next = dequeue();
+
+    if (!next) {
+      /* There are no more threads on the run_queue */
+      // printf(
+          // "[DEBUG]: No runnable threads on the run_queue. Returning to main\n");
+      struct itimerval stop_timer = {0};
+      setitimer(ITIMER_PROF, &stop_timer, NULL);
+
+      /* Return to main only once after all threads are done */
+      if(head==NULL){
+          // printf("[DEBUG]: All threads completed. Returning to main once.\n");
+          setcontext(&main_context);
+      }else{
+          // If threads exist but are BLOCKED (e.g. waiting on mutex), keep looping
+          // printf("[DEBUG]: Waiting for blocked threads to become runnable.\n");
+      }
+      continue;
+    }
+
+    current_thread = next;
+    current_thread->state = THREAD_RUNNING;
+    tot_cntx_switches++;
+
+    // printf("[DEBUG]: Switching to thread (%d)\n", current_thread->tid);
+    swapcontext(&sched_context, &current_thread->context);
+
+    // printf("[DEBUG]: Back to scheduler after thread (%d)\n",
+           // current_thread->tid);
+
+    if (current_thread->state == THREAD_RUNNING) {
+      // printf("[DEBUG]: Thread yeilded from unlock mostly, will be exited, not "
+             // "enqueuing\n");
+      continue;
+    }
+
+    if (current_thread->state == THREAD_TERMINATED) {
+      // printf("[DEBUG]: Thread done, removing from run_queue\n");
+    }
+
+    if(current_thread->state == THREAD_BLOCKED){
+        // printf("This thread is blocekd (%d)\n", current_thread->tid);
+    }
+
+    if (current_thread->state == THREAD_READY) {
+      enqueue(current_thread);
+    }
   }
-
-  current_thread->state = THREAD_READY;
-  block_signals();
-  enqueue(current_thread);
-  unblock_signals();
-  swapcontext(&current_thread->context, &sched_context);
 }
 
 /* Pre-emptive Shortest Job First (POLICY_PSJF) scheduling algorithm */
@@ -537,33 +657,13 @@ static void sched_cfs() {
   // Step6: Run the selected thread
 }
 
-static void sched_rr() {
-  printf("Running Round Robin\n");
-
-  block_signals();
-  current_thread = dequeue();
-  unblock_signals();
-
-  if (!current_thread) {
-    printf("All threads done, stopping program and returning to main\n");
-    struct itimerval stop = {0};
-    setitimer(ITIMER_PROF, &stop, NULL);
-    swapcontext(&sched_context, &main_context);
-    return;
-  }
-
-  printf("The current_thread is now (%d)\n", current_thread->tid);
-  current_thread->state = THREAD_RUNNING;
-  tot_cntx_switches++;
-  swapcontext(&sched_context, &current_thread->context);
-}
-
 /* I am forward referencing this function on the top of this script so that I
  * can reference it as the function in the make context function in the
  * sched_context */
 
 /* scheduler */
 static void schedule() {
+  // printf("[DEBUG]: Schedule called\n");
   // - every time a timer interrupt occurs, your worker thread library
   // should be contexted switched from a thread context to this
   // schedule() function
@@ -578,16 +678,9 @@ static void schedule() {
 #elif defined(CFS)
   sched_cfs();
 #elif defined(RR)
-  struct itimerval timer;
-  timer.it_interval.tv_usec = QUANTUM;
-  timer.it_interval.tv_sec = 0;
-  timer.it_value.tv_usec = QUANTUM;
-  timer.it_value.tv_sec = 0;
-  setitimer(ITIMER_PROF, &timer, NULL);
-
   sched_rr();
 #else
-#error "Define one of PSJF, MLFQ, or CFS when compiling. e.g. make SCHED=MLFQ"
+#error "Define one of PSJF, MLFQ, or CFS when compiling. e.g. make SCHED=MLFQ";
 #endif
 }
 
