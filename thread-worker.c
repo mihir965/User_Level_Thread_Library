@@ -419,10 +419,11 @@ int worker_mutex_unlock(worker_mutex_t *mutex) {
 
   // YOUR CODE HERE
   if (mutex->holder_tid != current_thread->tid) {
-    printf("Mutex unlock by non-owner thread - (%d). Mutex belongs to (%d)", current_thread->tid, mutex->holder_tid);
+    perror("Mutex unlock by non-owner thread\n");
     exit(1);
   }
   atomic_flag_clear(&mutex->lock_flag);
+  mutex->holder_tid = -1;
   if (mutex->head == NULL) {
     /* This means that no threads are contending for the lock at the moment */
     printf(
@@ -431,7 +432,6 @@ int worker_mutex_unlock(worker_mutex_t *mutex) {
     return 0;
   }
   printf("[DEBUG]: Waking a thread (%d)\n", mutex->head->thread_tcb->tid);
-  mutex->holder_tid = mutex->head->thread_tcb->tid;
   mutex->head->thread_tcb->state = THREAD_READY;
   enqueue(mutex->head->thread_tcb);
   q_thread *temp = mutex->head;
@@ -466,30 +466,8 @@ int worker_mutex_destroy(worker_mutex_t *mutex) {
   return 0;
 };
 
-void preempt(int signum){
-    if(current_thread && current_thread->state == THREAD_RUNNING){
-        printf("[DEBUG]: Timer interrupt -> yeilding thread (%d)\n", current_thread->tid);
-        current_thread->state = THREAD_READY;
-        swapcontext(&current_thread->context, &sched_context);
-    }
-}
-
 static void sched_rr() {
   printf("[DEBUG]: Entered sched_rr()\n");
-
-  struct sigaction sa;
-  memset(&sa, 0, sizeof(sa));
-  sa.sa_handler = &preempt;
-  sigaction(SIGPROF, &sa, NULL);
-
-  struct itimerval timer;
-  timer.it_interval.tv_usec = 1400;
-  timer.it_interval.tv_sec = 0;
-  timer.it_value.tv_usec = 1400;
-  timer.it_value.tv_sec = 0;
-
-  setitimer(ITIMER_PROF, &timer, NULL);
-
   while (1) {
     tcb *next = dequeue();
 
@@ -518,7 +496,6 @@ static void sched_rr() {
 
     if (current_thread->state == THREAD_TERMINATED) {
       printf("[DEBUG]: Thread done, removing from run_queue\n");
-      continue;
     }
 
     if (current_thread->state == THREAD_READY) {
