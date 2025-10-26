@@ -73,6 +73,12 @@ typedef struct TCB {
                 // ptr, it means that the return value needs to be saved. This
                 // attribute/element of the tcb will return this value
 
+  long elapsed;  // This is for knowing how long the thread executed for PSJF
+  long vruntime; // For CFS
+  long last_start_time; // We can measure how long the thread ran with this
+  int q_level;          // For MLFQ
+  int slice_used;       // How much of the current level's slice it has used
+
 } tcb;
 
 /* mutex struct definition */
@@ -144,6 +150,19 @@ int worker_mutex_destroy(worker_mutex_t *mutex);
 
 /* Functions for preemption etc */
 void preempt(int signum);
+
+// Need auxiliary functions for the min-heap
+void heap_swap(int i, int j);
+
+void heapify_up(int);
+
+void heapify_down(int);
+
+void heap_push(tcb *);
+
+tcb *heap_pop();
+
+void heap_remove(tcb *);
 
 /* Function to print global statistics. Do not modify this function.*/
 void print_app_stats(void);
