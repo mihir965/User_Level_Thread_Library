@@ -73,9 +73,11 @@ typedef struct TCB {
                 // ptr, it means that the return value needs to be saved. This
                 // attribute/element of the tcb will return this value
 
-  long exec_time; // This is for knowing how long the thread executed for PSJF
-  long vruntime;  // For CFS
+  long elapsed;  // This is for knowing how long the thread executed for PSJF
+  long vruntime; // For CFS
   long last_start_time; // We can measure how long the thread ran with this
+  int q_level;          // For MLFQ
+  int slice_used;       // How much of the current level's slice it has used
 
 } tcb;
 
@@ -101,10 +103,6 @@ typedef struct QueueThread {
   struct QueueThread *next;
   tcb *thread_tcb;
 } q_thread;
-
-// Need a min-heap for PSJF and for CFS
-static tcb *run_heap[MAX_THREADS];
-static int heap_size = 0;
 
 /* Function Declarations: */
 

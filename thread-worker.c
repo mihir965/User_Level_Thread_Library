@@ -6,12 +6,15 @@
 
 #include "thread-worker.h"
 #include <bits/types/sigset_t.h>
+#include <time.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <sys/types.h>
 #include <sys/ucontext.h>
 #include <ucontext.h>
 
@@ -33,20 +36,34 @@ static ucontext_t main_context;
 static int scheduler_initialized = 0;
 static int main_context_captured = 0;
 
+/* I will initialize all the data structures needed for the schedulers here */
+#if defined (RR)
 /* Initializing the head of the linked list */
 static q_thread *head = NULL;
-/* We also require a global linked list of all the threads ever created, this
- * will allow us to join threads that are not necessarily in the ready queue,
- * which is the one that we setup above */
-static q_thread *global_head = NULL;
-static tcb *current_thread = NULL;
+#elif defined (PSJF)
+// Need a min-heap for PSJF and for CFS
+static tcb *run_heap[MAX_THREADS];
+static int heap_size = 0;
+#endif
 
+/* We also require a global linked list of all the threads ever created, this
+* will allow us to join threads that are not necessarily in the ready queue,
+* which is the one that we setup above */
+static tcb *current_thread = NULL;
+static q_thread *global_head = NULL;
 static sigset_t signal_mask;
 static int timerstarted = 0;
 
 void block_signals() { sigprocmask(SIG_BLOCK, &signal_mask, NULL); }
 
 void unblock_signals() { sigprocmask(SIG_UNBLOCK, &signal_mask, NULL); }
+
+static inline uint64_t now_us(void){
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec/1000ull;
+}
+
 
 /* Forward referencing schedule()*/
 static void schedule();
@@ -127,6 +144,7 @@ tcb *find_tcb_by_tid(worker_t tid) {
  * scheduling policy */
 void enqueue(tcb *new_thread) {
   // printf("[DEBUG]: Enquque\n");
+#if defined (RR)
   q_thread *node = malloc(sizeof(q_thread));
   node->thread_tcb = new_thread;
   node->next = NULL;
@@ -146,12 +164,18 @@ void enqueue(tcb *new_thread) {
   // printf("thread (%d) has been enqueued into the scheduler\n",
   // new_thread->tid);
   return;
+#elif defined (PSJF) || defined (CFS)
+  heap_push(new_thread);
+  return;
+#endif
+
 }
 
 /* We will return the head of the queue and advance the queue to the next node
  * (tcb) */
 tcb *dequeue() {
   // printf("[DEBUG]: dequeue\n");
+#if defined (RR)
   if (head == NULL) {
     // printf("[DEBUG]: There are no threads in the runqueue\n");
     return NULL;
@@ -162,10 +186,15 @@ tcb *dequeue() {
   /* We cree the node that is getting returned through dequeue */
   free(node);
   return to_return;
+#elif defined(CFS) || defined (PSJF)
+  return heap_pop();
+#endif
+  return NULL;
 }
 
 void delete_from_queue(tcb *new_thread) {
   // printf("[DEBUG]: delete_from_queue\n");
+#if defined (RR)
   if (head == NULL)
     return;
 
@@ -190,6 +219,10 @@ void delete_from_queue(tcb *new_thread) {
   }
   // printf("Thread not found\n");
   return;
+#elif defined (CFS) || defined (PSJF)
+  heap_remove(new_thread);
+  return;
+#endif
 }
 
 void create_sched_context() {
@@ -255,6 +288,13 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
   new_thread->context.uc_stack.ss_flags = 0;
   new_thread->retval = NULL;
   new_thread->context.uc_link = &sched_context;
+
+  new_thread->elapsed = 0;
+  new_thread->vruntime = 0;
+  new_thread->q_level = 0;
+  new_thread->slice_used = 0;
+  new_thread->last_start_time = 0;
+
   makecontext(&new_thread->context, (void (*)())function, 1,
               arg); // The void* (*function) (void*) means that the function can
                     // return and pass in any type of data. void* is used for
@@ -336,12 +376,18 @@ int worker_join(worker_t thread, void **value_ptr) {
   while (1) {
     if (target_thread->state == THREAD_TERMINATED)
       break;
-
+#if defined (RR)
     if (head == NULL && target_thread->state != THREAD_TERMINATED) {
       // printf("[DEBUG]: No runnable threads and target not terminated —
       // assuming done.\n");
       break;
     }
+#elif defined (PSJF) || defined (CFS)
+    if(heap_size==0 && target_thread->state != THREAD_TERMINATED){
+       printf("[DEBUG]: No runnable threads and target not terminated — assuming done.\n");
+       break;
+    }
+#endif
 
     swapcontext(&main_context, &sched_context);
   }
@@ -488,8 +534,14 @@ void preempt(int signum) {
   if (current_thread && current_thread->state == THREAD_RUNNING) {
     // printf("[DEBUG]: Timer interrupt -> yielding thread (%d)\n",
     // current_thread->tid);
+#if defined (RR)
     current_thread->state = THREAD_READY;
     swapcontext(&current_thread->context, &sched_context);
+#elif defined (PSJF)
+    current_thread->elapsed+=1;
+    current_thread->state = THREAD_READY;
+    swapcontext(&current_thread->context, &sched_context);
+#endif
   }
 }
 
@@ -533,6 +585,7 @@ static void sched_rr() {
       setitimer(ITIMER_PROF, &stop_timer, NULL);
 
       /* Return to main only once after all threads are done */
+#if defined (RR)
       if (head == NULL) {
         // printf("[DEBUG]: All threads completed. Returning to main once.\n");
         setcontext(&main_context);
@@ -541,6 +594,7 @@ static void sched_rr() {
         // looping printf("[DEBUG]: Waiting for blocked threads to become
         // runnable.\n");
       }
+#endif
       continue;
     }
 
@@ -575,6 +629,7 @@ static void sched_rr() {
 }
 
 /* Code for the min_heap implementation */
+/* All the functions have been modifed to run differently based on the scheudler chosen */
 
 void heap_swap(int i, int j){
     tcb* temp = run_heap[i];
@@ -587,8 +642,14 @@ void heapify_down(int i){
         int left = 2*i + 1;
         int right = 2*i + 2;
         int smallest = i;
-        if(left<heap_size && run_heap[left]->exec_time < run_heap[smallest]->exec_time) smallest = left;
-        if(right<heap_size && run_heap[right]->exec_time < run_heap[smallest]->exec_time) smallest = right;
+#if defined (PSJF)
+        if(left<heap_size && run_heap[left]->elapsed < run_heap[smallest]->elapsed) smallest = left;
+        if(right<heap_size && run_heap[right]->elapsed < run_heap[smallest]->elapsed) smallest = right;
+
+#elif defined (CFS)
+        if(left<heap_size && run_heap[left]->vruntime < run_heap[smallest]->vruntime) smallest = left;
+        if(right<heap_size && run_heap[right]->vruntime < run_heap[smallest]->vruntime) smallest = right;
+#endif
         if(smallest == i) break;
         heap_swap(i, smallest);
         i = smallest;
@@ -598,7 +659,11 @@ void heapify_down(int i){
 void heapify_up(int i){
     while(i>0){
         int parent = (i-1)/2;
-        if(run_heap[parent]->exec_time <= run_heap[i]->exec_time) break;
+#if defined (PSJF)
+        if(run_heap[parent]->elapsed <= run_heap[i]->elapsed) break;
+#elif defined(CFS)
+        if(run_heap[parent]->vruntime <= run_heap[i]->vruntime) break;
+#endif
         heap_swap(i, parent);
         i = parent;
     }
@@ -636,6 +701,36 @@ static void sched_psjf() {
   // (feel free to modify arguments and return types)
 
   // YOUR CODE HERE
+  struct sigaction sa; 
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = &preempt;
+  sigaction(SIGPROF, &sa, NULL);
+
+  struct itimerval timer;
+  timer.it_interval.tv_sec=0; timer.it_interval.tv_usec = QUANTUM;
+  timer.it_value.tv_sec = 0; timer.it_value.tv_usec = QUANTUM;
+  setitimer(ITIMER_PROF, &timer, NULL);
+
+  for(;;){
+      block_signals();
+      tcb* next = dequeue();
+      unblock_signals();
+      if(!next){
+          struct itimerval stop = {0}; setitimer(ITIMER_PROF, &stop, NULL);
+          setcontext(&main_context);
+      }
+      current_thread = next;
+      current_thread->state = THREAD_RUNNING;
+      current_thread->last_start_time = now_us();
+      tot_cntx_switches++;
+
+      /* Run the scheduler */
+      swapcontext(&sched_context, &current_thread->context);
+
+      /* This is where a preempt, yeild or exit will come */
+      if(current_thread->state == THREAD_TERMINATED)continue;
+      if(current_thread->state == THREAD_READY) enqueue(current_thread);
+  }
 }
 
 /* Preemptive MLFQ scheduling algorithm */
