@@ -574,6 +574,62 @@ static void sched_rr() {
   }
 }
 
+/* Code for the min_heap implementation */
+
+void heap_swap(int i, int j){
+    tcb* temp = run_heap[i];
+    run_heap[i] = run_heap[j];
+    run_heap[j] = temp;
+}
+
+void heapify_down(int i){
+    while(1){
+        int left = 2*i + 1;
+        int right = 2*i + 2;
+        int smallest = i;
+        if(left<heap_size && run_heap[left]->exec_time < run_heap[smallest]->exec_time) smallest = left;
+        if(right<heap_size && run_heap[right]->exec_time < run_heap[smallest]->exec_time) smallest = right;
+        if(smallest == i) break;
+        heap_swap(i, smallest);
+        i = smallest;
+    }
+}
+
+void heapify_up(int i){
+    while(i>0){
+        int parent = (i-1)/2;
+        if(run_heap[parent]->exec_time <= run_heap[i]->exec_time) break;
+        heap_swap(i, parent);
+        i = parent;
+    }
+}
+
+void heap_push(tcb* thread){
+    run_heap[heap_size] = thread;
+    int i = heap_size;
+    heap_size++;
+    heapify_up(i);
+}
+
+tcb* heap_pop(){
+    if(heap_size==0) return NULL;
+    tcb* min = run_heap[0];
+    run_heap[0] = run_heap[--heap_size];
+    heapify_down(0);
+    return min;
+}
+
+void heap_remove(tcb *thread){
+    int i;
+    for(i=0; i<heap_size; i++){
+        if(run_heap[i] == thread) break;
+    }
+    if(i==heap_size) return;
+    run_heap[i] = run_heap[--heap_size];
+    heapify_down(i);
+    heapify_up(i);
+}
+
 /* Pre-emptive Shortest Job First (POLICY_PSJF) scheduling algorithm */
 static void sched_psjf() {
   // - your own implementation of PSJF
