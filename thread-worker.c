@@ -40,7 +40,7 @@ static int main_context_captured = 0;
 #if defined (RR)
 /* Initializing the head of the linked list */
 static q_thread *head = NULL;
-#elif defined (PSJF)
+#elif defined (PSJF) || defined (CFS)
 // Need a min-heap for PSJF and for CFS
 static tcb *run_heap[MAX_THREADS];
 static int heap_size = 0;
@@ -58,10 +58,21 @@ void block_signals() { sigprocmask(SIG_BLOCK, &signal_mask, NULL); }
 
 void unblock_signals() { sigprocmask(SIG_UNBLOCK, &signal_mask, NULL); }
 
+/* The time now in micro_seconds */
 static inline uint64_t now_us(void){
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec/1000ull;
+}
+
+/* We need to be able to modify the time_slice for CFS based on the number of threads */
+static inline int runnable_count(void){
+#if defined (PSJF) || defined (CFS)
+    int n = heap_size;
+    if(current_thread && current_thread->state == THREAD_RUNNING)n++;
+    return (n>0)?n:1;
+#endif
+    return 0;
 }
 
 
@@ -541,6 +552,12 @@ void preempt(int signum) {
     current_thread->elapsed+=1;
     current_thread->state = THREAD_READY;
     swapcontext(&current_thread->context, &sched_context);
+#elif defined (CFS)
+    if(!current_thread) return;
+    if(current_thread->state==THREAD_RUNNING){
+        current_thread->state = THREAD_READY;
+        swapcontext(&current_thread->context, &sched_context);
+    }
 #endif
   }
 }
@@ -707,8 +724,8 @@ static void sched_psjf() {
   sigaction(SIGPROF, &sa, NULL);
 
   struct itimerval timer;
-  timer.it_interval.tv_sec=0; timer.it_interval.tv_usec = QUANTUM;
-  timer.it_value.tv_sec = 0; timer.it_value.tv_usec = QUANTUM;
+  timer.it_interval.tv_sec=0; timer.it_interval.tv_usec = QUANTUM*1000;
+  timer.it_value.tv_sec = 0; timer.it_value.tv_usec = QUANTUM*1000;
   setitimer(ITIMER_PROF, &timer, NULL);
 
   for(;;){
@@ -766,6 +783,52 @@ static void sched_cfs() {
   // smaller than minimum_granularity (MIN_SCHED_GRN), use MIN_SCHED_GRN instead
   // Step5: Setup next time interrupt based on the time slice
   // Step6: Run the selected thread
+
+    sigemptyset(&signal_mask);
+    sigaddset(&signal_mask, SIGPROF);
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_handler = &preempt;
+    sigaction(SIGPROF, &sa, NULL);
+
+    for(;;){
+        tcb *next = dequeue();
+        if(!next){
+            struct itimerval stop = {0};
+            setitimer(ITIMER_PROF, &stop, NULL);
+            setcontext(&main_context);
+        }
+        current_thread = next;
+        current_thread->state = THREAD_RUNNING;
+        current_thread->last_start_time = now_us();
+        tot_cntx_switches++;
+
+        int n = runnable_count();
+        uint64_t slice_ms = TARGET_LATENCY / (uint64_t)n;
+        if(slice_ms < MIN_SCHED_GRN) slice_ms = MIN_SCHED_GRN;
+        uint64_t slice_us = slice_ms * 1000ull;
+
+        struct itimerval timer;
+        memset(&timer, 0, sizeof timer);
+        timer.it_value.tv_sec = slice_us / 1000000ULL;
+        timer.it_value.tv_usec = slice_us % 1000000ULL;
+
+        setitimer(ITIMER_PROF, &timer, NULL);
+
+        swapcontext(&sched_context, &current_thread->context);
+
+        uint64_t now = now_us();
+        uint64_t ran = now - current_thread->last_start_time;
+        current_thread->vruntime+=ran;
+
+        if(current_thread->state == THREAD_TERMINATED) continue;
+
+        if(current_thread->state == THREAD_READY) {
+            block_signals();
+            enqueue(current_thread);
+            unblock_signals();
+        }
+    }
 }
 
 /* I am forward referencing this function on the top of this script so that I
