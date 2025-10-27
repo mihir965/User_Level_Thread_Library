@@ -28,6 +28,11 @@
  * beginning*/
 #define MAX_THREADS 1024
 
+#define MLFQ_LEVELS 5
+#define BASE_Q_MS 10 // For the highest-priority quantum
+#define BOOST_MS 200 // rule 5: periodic boost interval
+#define TICK_MS 10   // SIGPROF tick
+
 /* include lib header files that you need here: */
 #include <signal.h>
 #include <stdio.h>
