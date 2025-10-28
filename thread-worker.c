@@ -6,7 +6,6 @@
 
 #include "thread-worker.h"
 #include <bits/types/sigset_t.h>
-#include <time.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -16,6 +15,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/ucontext.h>
+#include <time.h>
 #include <ucontext.h>
 
 // Global counter for total context switches and
@@ -37,30 +37,30 @@ static int scheduler_initialized = 0;
 static int main_context_captured = 0;
 
 /* I will initialize all the data structures needed for the schedulers here */
-#if defined (RR)
+#if defined(RR)
 /* Initializing the head of the linked list */
 static q_thread *head = NULL;
-#elif defined (PSJF) || defined (CFS)
+#elif defined(PSJF) || defined(CFS)
 // Need a min-heap for PSJF and for CFS
 static tcb *run_heap[MAX_THREADS];
 static int heap_size = 0;
-#elif defined (MLFQ)
+#elif defined(MLFQ)
 static q_thread *mlfq[MLFQ_LEVELS] = {0};
 
 /* Last time we boosted all threads to the top */
 static uint64_t last_boost_us = 0;
 
 /* Helper */
-static inline int mlfq_quantum_ms(int lvl){
-    int q = BASE_Q_MS << lvl;
-    return q < BASE_Q_MS ? BASE_Q_MS : q;
+static inline int mlfq_quantum_ms(int lvl) {
+  int q = BASE_Q_MS << lvl;
+  return q < BASE_Q_MS ? BASE_Q_MS : q;
 }
 
 #endif
 
 /* We also require a global linked list of all the threads ever created, this
-* will allow us to join threads that are not necessarily in the ready queue,
-* which is the one that we setup above */
+ * will allow us to join threads that are not necessarily in the ready queue,
+ * which is the one that we setup above */
 static tcb *current_thread = NULL;
 static q_thread *global_head = NULL;
 static sigset_t signal_mask;
@@ -71,63 +71,68 @@ void block_signals() { sigprocmask(SIG_BLOCK, &signal_mask, NULL); }
 void unblock_signals() { sigprocmask(SIG_UNBLOCK, &signal_mask, NULL); }
 
 /* The time now in micro_seconds */
-static inline uint64_t now_us(void){
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec/1000ull;
+static inline uint64_t now_us(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
 }
 
-/* We need to be able to modify the time_slice for CFS based on the number of threads */
-static inline int runnable_count(void){
-#if defined (PSJF) || defined (CFS)
-    int n = heap_size;
-    if(current_thread && current_thread->state == THREAD_RUNNING)n++;
-    return (n>0)?n:1;
+/* We need to be able to modify the time_slice for CFS based on the number of
+ * threads */
+static inline int runnable_count(void) {
+#if defined(PSJF) || defined(CFS)
+  int n = heap_size;
+  if (current_thread && current_thread->state == THREAD_RUNNING)
+    n++;
+  return (n > 0) ? n : 1;
 #endif
-    return 0;
+  return 0;
 }
 
 /* Helpers for MLFQ */
-#if defined (MLFQ)
+#if defined(MLFQ)
 /* Basic FIFO push and pop on a level */
-static void mlfq_push_level(int lvl, tcb *t){
-    q_thread *node = (q_thread*)malloc(sizeof(q_thread));
-    node->thread_tcb = t;
-    node->next = NULL;
-    if(!mlfq[lvl]){
-        mlfq[lvl] = node;
-        return;
-    }
-    q_thread *p = mlfq[lvl];
-    while(p->next) p = p->next;
-    p->next = node;
+static void mlfq_push_level(int lvl, tcb *t) {
+  q_thread *node = (q_thread *)malloc(sizeof(q_thread));
+  node->thread_tcb = t;
+  node->next = NULL;
+  if (!mlfq[lvl]) {
+    mlfq[lvl] = node;
+    return;
+  }
+  q_thread *p = mlfq[lvl];
+  while (p->next)
+    p = p->next;
+  p->next = node;
 }
 
-static tcb* mlfq_pop_level(int lvl){
-    if(!mlfq[lvl]) return NULL;
-    q_thread *n = mlfq[lvl];
-    tcb *t = n->thread_tcb;
-    mlfq[lvl] = n->next;
-    free(n);
-    return t;
+static tcb *mlfq_pop_level(int lvl) {
+  if (!mlfq[lvl])
+    return NULL;
+  q_thread *n = mlfq[lvl];
+  tcb *t = n->thread_tcb;
+  mlfq[lvl] = n->next;
+  free(n);
+  return t;
 }
 
 /* Highest non-empty queue */
-static int mlfq_top_nonempty_level(void){
-    for(int i=0; i<MLFQ_LEVELS; i++) if (mlfq[i]) return i;
-    return -1;
+static int mlfq_top_nonempty_level(void) {
+  for (int i = 0; i < MLFQ_LEVELS; i++)
+    if (mlfq[i])
+      return i;
+  return -1;
 }
 
 /* Requeue to same level */
-static inline void mlfq_requeue_same(tcb *t){
-    mlfq_push_level(t->q_level, t);
-}
+static inline void mlfq_requeue_same(tcb *t) { mlfq_push_level(t->q_level, t); }
 
 /* demote if time slice fully used */
-static inline void mlfq_demote_or_stay(tcb* t){
-    if(t->q_level <MLFQ_LEVELS - 1) t->q_level++;
-    /* else alsredy on lowest level stay */
-    mlfq_push_level(t->q_level, t);
+static inline void mlfq_demote_or_stay(tcb *t) {
+  if (t->q_level < MLFQ_LEVELS - 1)
+    t->q_level++;
+  /* else alsredy on lowest level stay */
+  mlfq_push_level(t->q_level, t);
 }
 
 static void mlfq_boost_all(void) {
@@ -140,18 +145,21 @@ static void mlfq_boost_all(void) {
       q_thread *nx = cur->next;
       /* splice into new_head */
       cur->next = NULL;
-      if (!new_head) { new_head = new_tail = cur; }
-      else { new_tail->next = cur; new_tail = cur; }
+      if (!new_head) {
+        new_head = new_tail = cur;
+      } else {
+        new_tail->next = cur;
+        new_tail = cur;
+      }
       cur = nx;
     }
     mlfq[lvl] = NULL;
   }
-  mlfq[0] = new_head;                     // everything in top queue now
+  mlfq[0] = new_head; // everything in top queue now
   last_boost_us = now_us();
 }
 
 #endif
-
 
 /* Forward referencing schedule()*/
 static void schedule();
@@ -232,7 +240,7 @@ tcb *find_tcb_by_tid(worker_t tid) {
  * scheduling policy */
 void enqueue(tcb *new_thread) {
   // printf("[DEBUG]: Enquque\n");
-#if defined (RR)
+#if defined(RR)
   q_thread *node = malloc(sizeof(q_thread));
   node->thread_tcb = new_thread;
   node->next = NULL;
@@ -252,11 +260,12 @@ void enqueue(tcb *new_thread) {
   // printf("thread (%d) has been enqueued into the scheduler\n",
   // new_thread->tid);
   return;
-#elif defined (PSJF) || defined (CFS)
+#elif defined(PSJF) || defined(CFS)
   heap_push(new_thread);
   return;
-#elif defined (MLFQ)
-  if(new_thread->q_level < 0 || new_thread->q_level >= MLFQ_LEVELS) new_thread->q_level = 0;
+#elif defined(MLFQ)
+  if (new_thread->q_level < 0 || new_thread->q_level >= MLFQ_LEVELS)
+    new_thread->q_level = 0;
   mlfq_push_level(new_thread->q_level, new_thread);
 #endif
 }
@@ -265,7 +274,7 @@ void enqueue(tcb *new_thread) {
  * (tcb) */
 tcb *dequeue() {
   // printf("[DEBUG]: dequeue\n");
-#if defined (RR)
+#if defined(RR)
   if (head == NULL) {
     // printf("[DEBUG]: There are no threads in the runqueue\n");
     return NULL;
@@ -276,7 +285,7 @@ tcb *dequeue() {
   /* We cree the node that is getting returned through dequeue */
   free(node);
   return to_return;
-#elif defined(CFS) || defined (PSJF)
+#elif defined(CFS) || defined(PSJF)
   return heap_pop();
 #elif defined(MLFQ)
   int lvl = mlfq_top_nonempty_level();
@@ -287,7 +296,7 @@ tcb *dequeue() {
 
 void delete_from_queue(tcb *new_thread) {
   // printf("[DEBUG]: delete_from_queue\n");
-#if defined (RR)
+#if defined(RR)
   if (head == NULL)
     return;
 
@@ -312,23 +321,25 @@ void delete_from_queue(tcb *new_thread) {
   }
   // printf("Thread not found\n");
   return;
-#elif defined (CFS) || defined (PSJF)
+#elif defined(CFS) || defined(PSJF)
   heap_remove(new_thread);
   return;
-#elif defined (MLFQ)
-for (int l = 0; l < MLFQ_LEVELS; l++) {
+#elif defined(MLFQ)
+  for (int l = 0; l < MLFQ_LEVELS; l++) {
     q_thread *curr = mlfq[l], *prev = NULL;
     while (curr) {
-        if (curr->thread_tcb == new_thread) {
-            if (!prev) mlfq[l] = curr->next;
-            else prev->next = curr->next;
-            free(curr);
-            return;
-        }
-        prev = curr;
-        curr = curr->next;
+      if (curr->thread_tcb == new_thread) {
+        if (!prev)
+          mlfq[l] = curr->next;
+        else
+          prev->next = curr->next;
+        free(curr);
+        return;
+      }
+      prev = curr;
+      curr = curr->next;
     }
-}
+  }
 
 #endif
 }
@@ -403,6 +414,11 @@ int worker_create(worker_t *thread, pthread_attr_t *attr,
   new_thread->slice_used = 0;
   new_thread->last_start_time = 0;
 
+  new_thread->create_time = now_us();
+  new_thread->has_started = 0;
+  new_thread->start_time = 0;
+  new_thread->end_time = 0;
+
   makecontext(&new_thread->context, (void (*)())function, 1,
               arg); // The void* (*function) (void*) means that the function can
                     // return and pass in any type of data. void* is used for
@@ -444,9 +460,19 @@ void worker_exit(void *value_ptr) {
   // - de-allocate any dynamic memory created when starting this thread
 
   // YOUR CODE HERE
+  current_thread->end_time = now_us();
   current_thread->state = THREAD_TERMINATED;
   current_thread->retval =
       value_ptr; // This will be assined to the **value_ptr in worker_join
+
+  /* Computing turnaround and response time */
+  double turn =
+      (current_thread->end_time - current_thread->create_time) / 1000.0;
+  double resp =
+      (current_thread->start_time - current_thread->create_time) / 1000.0;
+
+  avg_turn_time += turn;
+  avg_resp_time += resp;
 
   /* Go back to the scheduler context  */
   swapcontext(&current_thread->context, &sched_context);
@@ -484,16 +510,17 @@ int worker_join(worker_t thread, void **value_ptr) {
   while (1) {
     if (target_thread->state == THREAD_TERMINATED)
       break;
-#if defined (RR)
+#if defined(RR)
     if (head == NULL && target_thread->state != THREAD_TERMINATED) {
       // printf("[DEBUG]: No runnable threads and target not terminated —
       // assuming done.\n");
       break;
     }
-#elif defined (PSJF) || defined (CFS)
-    if(heap_size==0 && target_thread->state != THREAD_TERMINATED){
-       printf("[DEBUG]: No runnable threads and target not terminated — assuming done.\n");
-       break;
+#elif defined(PSJF) || defined(CFS)
+    if (heap_size == 0 && target_thread->state != THREAD_TERMINATED) {
+      // printf("[DEBUG]: No runnable threads and target not terminated — "
+      // "assuming done.\n");
+      break;
     }
 #endif
 
@@ -551,8 +578,8 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
       return 0;
     }
     /* This means that eh lock is in contention */
-    printf("[DEBUG]: Adding thread (%d) to the mutex's blocked queue\n",
-           current_thread->tid);
+    // printf("[DEBUG]: Adding thread (%d) to the mutex's blocked queue\n",
+    // current_thread->tid);
     current_thread->state = THREAD_BLOCKED;
 
     /* Append to wait queue */
@@ -570,7 +597,7 @@ int worker_mutex_lock(worker_mutex_t *mutex) {
       t->next->next = NULL;
     }
     /* Go to scheduler */
-    printf("[DEBUG]: Swapping back to scheduler\n");
+    // printf("[DEBUG]: Swapping back to scheduler\n");
     unblock_signals();
     delete_from_queue(current_thread);
     swapcontext(&current_thread->context, &sched_context);
@@ -642,24 +669,25 @@ void preempt(int signum) {
   if (current_thread && current_thread->state == THREAD_RUNNING) {
     // printf("[DEBUG]: Timer interrupt -> yielding thread (%d)\n",
     // current_thread->tid);
-#if defined (RR)
+#if defined(RR)
     current_thread->state = THREAD_READY;
     swapcontext(&current_thread->context, &sched_context);
-#elif defined (PSJF)
-    current_thread->elapsed+=1;
+#elif defined(PSJF)
+    current_thread->elapsed += 1;
     current_thread->state = THREAD_READY;
     swapcontext(&current_thread->context, &sched_context);
-#elif defined (CFS)
-    if(!current_thread) return;
-    if(current_thread->state==THREAD_RUNNING){
-        current_thread->state = THREAD_READY;
-        swapcontext(&current_thread->context, &sched_context);
+#elif defined(CFS)
+    if (!current_thread)
+      return;
+    if (current_thread->state == THREAD_RUNNING) {
+      current_thread->state = THREAD_READY;
+      swapcontext(&current_thread->context, &sched_context);
     }
 #elif defined(MLFQ)
     int q_ms = mlfq_quantum_ms(current_thread->q_level);
-    if(current_thread->slice_used >= q_ms){
-        current_thread->state = THREAD_READY;
-        swapcontext(&current_thread->context, &sched_context);
+    if (current_thread->slice_used >= q_ms) {
+      current_thread->state = THREAD_READY;
+      swapcontext(&current_thread->context, &sched_context);
     }
 #endif
   }
@@ -705,7 +733,7 @@ static void sched_rr() {
       setitimer(ITIMER_PROF, &stop_timer, NULL);
 
       /* Return to main only once after all threads are done */
-#if defined (RR)
+#if defined(RR)
       if (head == NULL) {
         // printf("[DEBUG]: All threads completed. Returning to main once.\n");
         setcontext(&main_context);
@@ -720,6 +748,11 @@ static void sched_rr() {
 
     current_thread = next;
     current_thread->state = THREAD_RUNNING;
+    current_thread->last_start_time = now_us();
+    if (!current_thread->has_started) {
+      current_thread->start_time = current_thread->last_start_time;
+      current_thread->has_started = 1;
+    }
     tot_cntx_switches++;
 
     // printf("[DEBUG]: Switching to thread (%d)\n", current_thread->tid);
@@ -749,71 +782,86 @@ static void sched_rr() {
 }
 
 /* Code for the min_heap implementation */
-/* All the functions have been modifed to run differently based on the scheudler chosen */
+/* All the functions have been modifed to run differently based on the scheudler
+ * chosen */
 
-#if defined (CFS) || defined (PSJF)
-void heap_swap(int i, int j){
-    tcb* temp = run_heap[i];
-    run_heap[i] = run_heap[j];
-    run_heap[j] = temp;
+#if defined(CFS) || defined(PSJF)
+void heap_swap(int i, int j) {
+  tcb *temp = run_heap[i];
+  run_heap[i] = run_heap[j];
+  run_heap[j] = temp;
 }
 
-void heapify_down(int i){
-    while(1){
-        int left = 2*i + 1;
-        int right = 2*i + 2;
-        int smallest = i;
-#if defined (PSJF)
-        if(left<heap_size && run_heap[left]->elapsed < run_heap[smallest]->elapsed) smallest = left;
-        if(right<heap_size && run_heap[right]->elapsed < run_heap[smallest]->elapsed) smallest = right;
+void heapify_down(int i) {
+  while (1) {
+    int left = 2 * i + 1;
+    int right = 2 * i + 2;
+    int smallest = i;
+#if defined(PSJF)
+    if (left < heap_size &&
+        run_heap[left]->elapsed < run_heap[smallest]->elapsed)
+      smallest = left;
+    if (right < heap_size &&
+        run_heap[right]->elapsed < run_heap[smallest]->elapsed)
+      smallest = right;
 
-#elif defined (CFS)
-        if(left<heap_size && run_heap[left]->vruntime < run_heap[smallest]->vruntime) smallest = left;
-        if(right<heap_size && run_heap[right]->vruntime < run_heap[smallest]->vruntime) smallest = right;
-#endif
-        if(smallest == i) break;
-        heap_swap(i, smallest);
-        i = smallest;
-    }
-}
-
-void heapify_up(int i){
-    while(i>0){
-        int parent = (i-1)/2;
-#if defined (PSJF)
-        if(run_heap[parent]->elapsed <= run_heap[i]->elapsed) break;
 #elif defined(CFS)
-        if(run_heap[parent]->vruntime <= run_heap[i]->vruntime) break;
+    if (left < heap_size &&
+        run_heap[left]->vruntime < run_heap[smallest]->vruntime)
+      smallest = left;
+    if (right < heap_size &&
+        run_heap[right]->vruntime < run_heap[smallest]->vruntime)
+      smallest = right;
 #endif
-        heap_swap(i, parent);
-        i = parent;
-    }
+    if (smallest == i)
+      break;
+    heap_swap(i, smallest);
+    i = smallest;
+  }
 }
 
-void heap_push(tcb* thread){
-    run_heap[heap_size] = thread;
-    int i = heap_size;
-    heap_size++;
-    heapify_up(i);
+void heapify_up(int i) {
+  while (i > 0) {
+    int parent = (i - 1) / 2;
+#if defined(PSJF)
+    if (run_heap[parent]->elapsed <= run_heap[i]->elapsed)
+      break;
+#elif defined(CFS)
+    if (run_heap[parent]->vruntime <= run_heap[i]->vruntime)
+      break;
+#endif
+    heap_swap(i, parent);
+    i = parent;
+  }
 }
 
-tcb* heap_pop(){
-    if(heap_size==0) return NULL;
-    tcb* min = run_heap[0];
-    run_heap[0] = run_heap[--heap_size];
-    heapify_down(0);
-    return min;
+void heap_push(tcb *thread) {
+  run_heap[heap_size] = thread;
+  int i = heap_size;
+  heap_size++;
+  heapify_up(i);
 }
 
-void heap_remove(tcb *thread){
-    int i;
-    for(i=0; i<heap_size; i++){
-        if(run_heap[i] == thread) break;
-    }
-    if(i==heap_size) return;
-    run_heap[i] = run_heap[--heap_size];
-    heapify_down(i);
-    heapify_up(i);
+tcb *heap_pop() {
+  if (heap_size == 0)
+    return NULL;
+  tcb *min = run_heap[0];
+  run_heap[0] = run_heap[--heap_size];
+  heapify_down(0);
+  return min;
+}
+
+void heap_remove(tcb *thread) {
+  int i;
+  for (i = 0; i < heap_size; i++) {
+    if (run_heap[i] == thread)
+      break;
+  }
+  if (i == heap_size)
+    return;
+  run_heap[i] = run_heap[--heap_size];
+  heapify_down(i);
+  heapify_up(i);
 }
 #endif
 
@@ -823,40 +871,44 @@ static void sched_psjf() {
   // (feel free to modify arguments and return types)
 
   // YOUR CODE HERE
-  struct sigaction sa; 
+  struct sigaction sa;
   memset(&sa, 0, sizeof sa);
   sa.sa_handler = &preempt;
   sigaction(SIGPROF, &sa, NULL);
 
   struct itimerval timer;
-  timer.it_interval.tv_sec=0; timer.it_interval.tv_usec = QUANTUM*1000;
-  timer.it_value.tv_sec = 0; timer.it_value.tv_usec = QUANTUM*1000;
+  timer.it_interval.tv_sec = 0;
+  timer.it_interval.tv_usec = QUANTUM * 1000;
+  timer.it_value.tv_sec = 0;
+  timer.it_value.tv_usec = QUANTUM * 1000;
   setitimer(ITIMER_PROF, &timer, NULL);
 
-  for(;;){
-      block_signals();
-      tcb* next = dequeue();
-      unblock_signals();
-      if(!next){
-          struct itimerval stop = {0}; setitimer(ITIMER_PROF, &stop, NULL);
-          setcontext(&main_context);
-      }
-      current_thread = next;
-      current_thread->state = THREAD_RUNNING;
-      current_thread->last_start_time = now_us();
-      tot_cntx_switches++;
+  for (;;) {
+    block_signals();
+    tcb *next = dequeue();
+    unblock_signals();
+    if (!next) {
+      struct itimerval stop = {0};
+      setitimer(ITIMER_PROF, &stop, NULL);
+      setcontext(&main_context);
+    }
+    current_thread = next;
+    current_thread->state = THREAD_RUNNING;
+    current_thread->last_start_time = now_us();
+    tot_cntx_switches++;
 
-      /* Run the scheduler */
-      swapcontext(&sched_context, &current_thread->context);
+    /* Run the scheduler */
+    swapcontext(&sched_context, &current_thread->context);
 
-      /* This is where a preempt, yeild or exit will come */
-      if(current_thread->state == THREAD_TERMINATED)continue;
-      if(current_thread->state == THREAD_READY) enqueue(current_thread);
+    /* This is where a preempt, yeild or exit will come */
+    if (current_thread->state == THREAD_TERMINATED)
+      continue;
+    if (current_thread->state == THREAD_READY)
+      enqueue(current_thread);
   }
 }
 
-#if defined (MLFQ)
-/* Preemptive MLFQ scheduling algorithm */
+#if defined(MLFQ)
 static void sched_mlfq() {
   // - your own implementation of MLFQ
   // (feel free to modify arguments and return types)
@@ -871,22 +923,24 @@ static void sched_mlfq() {
   // topmost queue (Rule 5) Step4: Apply RR on the topmost queue with entries
   // and run next thread
 
-  
   sigemptyset(&signal_mask);
   sigaddset(&signal_mask, SIGPROF);
-  struct sigaction sa; memset(&sa, 0, sizeof sa);
-  sa.sa_handler = &preempt; sigaction(SIGPROF, &sa, NULL);
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = &preempt;
+  sigaction(SIGPROF, &sa, NULL);
 
-  struct itimerval tick; memset(&tick, 0, sizeof tick);
+  struct itimerval tick;
+  memset(&tick, 0, sizeof tick);
   tick.it_interval.tv_sec = 0;
   tick.it_interval.tv_usec = TICK_MS * 1000;
-  tick.it_value = tick.it_interval;         // start now
+  tick.it_value = tick.it_interval; // start now
   setitimer(ITIMER_PROF, &tick, NULL);
 
-  if (!last_boost_us) last_boost_us = now_us();
+  if (!last_boost_us)
+    last_boost_us = now_us();
 
   for (;;) {
-    /* Rule 5: periodic boost */
     uint64_t now = now_us();
     if ((now - last_boost_us) >= (uint64_t)BOOST_MS * 1000ULL) {
       mlfq_boost_all();
@@ -896,11 +950,13 @@ static void sched_mlfq() {
     tcb *next = dequeue();
     if (!next) {
       /* No runnable: stop timer and return to main if everything done */
-      struct itimerval stop = {0}; setitimer(ITIMER_PROF, &stop, NULL);
+      struct itimerval stop = {0};
+      setitimer(ITIMER_PROF, &stop, NULL);
 
       /* If absolutely nothing is runnable, hand control back to main */
       int lvl_nonempty = mlfq_top_nonempty_level();
-      if (lvl_nonempty < 0) setcontext(&main_context);
+      if (lvl_nonempty < 0)
+        setcontext(&main_context);
       /* Otherwise continue; */
       continue;
     }
@@ -918,22 +974,23 @@ static void sched_mlfq() {
     uint64_t end = now_us();
     uint64_t ran_us = end - current_thread->last_start_time;
     int ran_ms = (int)(ran_us / 1000ULL);
-    if (ran_ms < 0) ran_ms = 0;
+    if (ran_ms < 0)
+      ran_ms = 0;
     current_thread->slice_used += ran_ms;
 
     if (current_thread->state == THREAD_BLOCKED) {
-      current_thread->slice_used = 0;   // reset for fairness
+      current_thread->slice_used = 0; // reset for fairness
       continue;
     }
 
     if (current_thread->state == THREAD_READY) {
-      /* Decide: demote or requeue same, based on whether quantum was fully used */
+      /* Decide: demote or requeue same, based on whether quantum was fully used
+       */
       int q_ms = mlfq_quantum_ms(current_thread->q_level);
       if (current_thread->slice_used >= q_ms) {
         current_thread->slice_used = 0;
         mlfq_demote_or_stay(current_thread);
       } else {
-        /* yielded early → stays at same level */
         mlfq_requeue_same(current_thread);
       }
     }
@@ -959,51 +1016,53 @@ static void sched_cfs() {
   // Step5: Setup next time interrupt based on the time slice
   // Step6: Run the selected thread
 
-    sigemptyset(&signal_mask);
-    sigaddset(&signal_mask, SIGPROF);
-    struct sigaction sa;
-    memset(&sa, 0, sizeof sa);
-    sa.sa_handler = &preempt;
-    sigaction(SIGPROF, &sa, NULL);
+  sigemptyset(&signal_mask);
+  sigaddset(&signal_mask, SIGPROF);
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = &preempt;
+  sigaction(SIGPROF, &sa, NULL);
 
-    for(;;){
-        tcb *next = dequeue();
-        if(!next){
-            struct itimerval stop = {0};
-            setitimer(ITIMER_PROF, &stop, NULL);
-            setcontext(&main_context);
-        }
-        current_thread = next;
-        current_thread->state = THREAD_RUNNING;
-        current_thread->last_start_time = now_us();
-        tot_cntx_switches++;
-
-        int n = runnable_count();
-        uint64_t slice_ms = TARGET_LATENCY / (uint64_t)n;
-        if(slice_ms < MIN_SCHED_GRN) slice_ms = MIN_SCHED_GRN;
-        uint64_t slice_us = slice_ms * 1000ull;
-
-        struct itimerval timer;
-        memset(&timer, 0, sizeof timer);
-        timer.it_value.tv_sec = slice_us / 1000000ULL;
-        timer.it_value.tv_usec = slice_us % 1000000ULL;
-
-        setitimer(ITIMER_PROF, &timer, NULL);
-
-        swapcontext(&sched_context, &current_thread->context);
-
-        uint64_t now = now_us();
-        uint64_t ran = now - current_thread->last_start_time;
-        current_thread->vruntime+=ran;
-
-        if(current_thread->state == THREAD_TERMINATED) continue;
-
-        if(current_thread->state == THREAD_READY) {
-            block_signals();
-            enqueue(current_thread);
-            unblock_signals();
-        }
+  for (;;) {
+    tcb *next = dequeue();
+    if (!next) {
+      struct itimerval stop = {0};
+      setitimer(ITIMER_PROF, &stop, NULL);
+      setcontext(&main_context);
     }
+    current_thread = next;
+    current_thread->state = THREAD_RUNNING;
+    current_thread->last_start_time = now_us();
+    tot_cntx_switches++;
+
+    int n = runnable_count();
+    uint64_t slice_ms = TARGET_LATENCY / (uint64_t)n;
+    if (slice_ms < MIN_SCHED_GRN)
+      slice_ms = MIN_SCHED_GRN;
+    uint64_t slice_us = slice_ms * 1000ull;
+
+    struct itimerval timer;
+    memset(&timer, 0, sizeof timer);
+    timer.it_value.tv_sec = slice_us / 1000000ULL;
+    timer.it_value.tv_usec = slice_us % 1000000ULL;
+
+    setitimer(ITIMER_PROF, &timer, NULL);
+
+    swapcontext(&sched_context, &current_thread->context);
+
+    uint64_t now = now_us();
+    uint64_t ran = now - current_thread->last_start_time;
+    current_thread->vruntime += ran;
+
+    if (current_thread->state == THREAD_TERMINATED)
+      continue;
+
+    if (current_thread->state == THREAD_READY) {
+      block_signals();
+      enqueue(current_thread);
+      unblock_signals();
+    }
+  }
 }
 
 /* I am forward referencing this function on the top of this script so that I

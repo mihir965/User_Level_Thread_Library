@@ -8,6 +8,7 @@
 #define WORKER_T_H
 
 #include <stdatomic.h>
+#include <stdint.h>
 #include <sys/ucontext.h>
 #define _GNU_SOURCE
 
@@ -83,6 +84,10 @@ typedef struct TCB {
   long last_start_time; // We can measure how long the thread ran with this
   int q_level;          // For MLFQ
   int slice_used;       // How much of the current level's slice it has used
+  uint64_t create_time;
+  uint64_t start_time;
+  uint64_t end_time;
+  int has_started;
 
 } tcb;
 
